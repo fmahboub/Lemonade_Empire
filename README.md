@@ -1,2 +1,3 @@
 # Lemonade Empire
-## Text based lemonade business simulator
+## Description
+A text based simulator of a burgioning lemonade business.
