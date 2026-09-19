@@ -361,6 +361,9 @@ ensure_state("game_started", False)
 ensure_state("game_over", False)
 ensure_state("player_name", "")
 ensure_state("current_screen", "main_menu")
+# The intro screen renders the hero before a game has been started.
+# Give it a safe initial day so the UI never depends on game-start initialization.
+ensure_state("day", 1)
 
 
 def init_game_state(name):
