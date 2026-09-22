@@ -361,6 +361,8 @@ ensure_state("game_started", False)
 ensure_state("game_over", False)
 ensure_state("player_name", "")
 ensure_state("current_screen", "main_menu")
+ensure_state("today_market_purchases", [])
+ensure_state("yesterday_market_purchases", [])
 # The intro screen renders the hero before a game has been started.
 # Give it a safe initial day so the UI never depends on game-start initialization.
 ensure_state("day", 1)
@@ -410,6 +412,12 @@ def init_game_state(name):
     # New presentation/history state.
     st.session_state.sales_history = []
     st.session_state.market_history = []
+
+    # Record each market transaction so yesterday's exact purchases
+    # (including bundle discounts) can be repeated on the next day.
+    st.session_state.today_market_purchases = []
+    st.session_state.yesterday_market_purchases = []
+
     st.session_state.summary = None
     st.session_state.current_screen = "main_menu"
     st.session_state.game_started = True
@@ -685,37 +693,125 @@ def render_market_chart():
     st.line_chart(df, height=240)
 
 
-def buy_lemons(quantity, discount=0):
+def record_market_purchase(item, quantity, discount):
+    """Remember one successful market transaction for replay tomorrow."""
+    st.session_state.today_market_purchases.append(
+        {
+            "item": item,
+            "quantity": quantity,
+            "discount": discount,
+        }
+    )
+
+
+def buy_lemons(quantity, discount=0, rerun=True):
     cost = round(quantity * st.session_state.lemPrice * (1 - discount), 2)
     if cost <= st.session_state.cash:
         st.session_state.cash -= cost
         st.session_state.lemons += quantity
+        record_market_purchase("lemons", quantity, discount)
         st.toast(f"🍋 Bought {quantity} lemons for {format_money(cost)}")
-        st.rerun()
+        if rerun:
+            st.rerun()
     else:
         st.error("Not enough cash!")
 
 
-def buy_sugar(quantity, discount=0):
+def buy_sugar(quantity, discount=0, rerun=True):
     cost = round(quantity * st.session_state.sugPrice * (1 - discount), 2)
     if cost <= st.session_state.cash:
         st.session_state.cash -= cost
         st.session_state.sugar += quantity
+        record_market_purchase("sugar", quantity, discount)
         st.toast(f"🍬 Bought {quantity:g}kg sugar for {format_money(cost)}")
-        st.rerun()
+        if rerun:
+            st.rerun()
     else:
         st.error("Not enough cash!")
 
 
-def buy_cups(quantity, discount=0):
+def buy_cups(quantity, discount=0, rerun=True):
     cost = round(quantity * st.session_state.cupPrice * (1 - discount), 2)
     if cost <= st.session_state.cash:
         st.session_state.cash -= cost
         st.session_state.cups += quantity
+        record_market_purchase("cups", quantity, discount)
         st.toast(f"🥤 Bought {quantity} cups for {format_money(cost)}")
-        st.rerun()
+        if rerun:
+            st.rerun()
     else:
         st.error("Not enough cash!")
+
+
+def repeat_yesterday_market_purchases():
+    """Repeat yesterday's exact market transactions using today's prices."""
+    purchases = st.session_state.yesterday_market_purchases
+
+    if not purchases:
+        st.info("You didn't make any market purchases yesterday.")
+        return
+
+    price_map = {
+        "lemons": st.session_state.lemPrice,
+        "sugar": st.session_state.sugPrice,
+        "cups": st.session_state.cupPrice,
+    }
+
+    labels = {
+        "lemons": "🍋 Lemons",
+        "sugar": "🍬 Sugar",
+        "cups": "🥤 Cups",
+    }
+
+    total_cost = 0.0
+    for purchase in purchases:
+        total_cost += (
+            purchase["quantity"]
+            * price_map[purchase["item"]]
+            * (1 - purchase["discount"])
+        )
+    total_cost = round(total_cost, 2)
+
+    if total_cost > st.session_state.cash:
+        st.error(
+            f"Not enough cash to repeat yesterday's purchases. "
+            f"You need {format_money(total_cost)}."
+        )
+        return
+
+    # All-or-nothing purchase: calculate everything first, then apply it.
+    st.session_state.cash -= total_cost
+
+    for purchase in purchases:
+        item = purchase["item"]
+        quantity = purchase["quantity"]
+
+        if item == "lemons":
+            st.session_state.lemons += quantity
+        elif item == "sugar":
+            st.session_state.sugar += quantity
+        elif item == "cups":
+            st.session_state.cups += quantity
+
+        # The replay itself becomes part of today's purchase history,
+        # so it can be repeated again tomorrow.
+        record_market_purchase(
+            item,
+            quantity,
+            purchase["discount"],
+        )
+
+    breakdown = []
+    for purchase in purchases:
+        breakdown.append(
+            f"{labels[purchase['item']]} × {purchase['quantity']:g}"
+        )
+
+    st.success(
+        f"🔁 Repeated yesterday's purchases for {format_money(total_cost)}"
+    )
+    st.caption(" · ".join(breakdown))
+    st.rerun()
 
 
 def go(screen):
@@ -851,6 +947,13 @@ def simulate_day(sale_price):
     if st.session_state.cash <= 0:
         st.session_state.game_over = True
     else:
+        # Today's exact market transactions become tomorrow's replay basket.
+        st.session_state.yesterday_market_purchases = [
+            purchase.copy()
+            for purchase in st.session_state.today_market_purchases
+        ]
+        st.session_state.today_market_purchases = []
+
         st.session_state.day += 1
         update_prices()
 
@@ -1100,6 +1203,36 @@ elif st.session_state.game_started and (not st.session_state.game_over or st.ses
     elif st.session_state.current_screen == "market":
         render_hero("The Market", "Buy ingredients now. Prices move from day to day.")
         show_recipe()
+
+        yesterday_purchases = st.session_state.yesterday_market_purchases
+        if yesterday_purchases:
+            st.markdown('<div class="card">', unsafe_allow_html=True)
+            st.markdown(
+                '<div class="section-kicker">YESTERDAY\'S MARKET</div>',
+                unsafe_allow_html=True,
+            )
+            st.markdown("### 🔁 Repeat yesterday's purchases")
+
+            replay_items = []
+            for purchase in yesterday_purchases:
+                item_name = {
+                    "lemons": "🍋 Lemons",
+                    "sugar": "🍬 Sugar",
+                    "cups": "🥤 Cups",
+                }[purchase["item"]]
+                replay_items.append(
+                    f"{item_name} × {purchase['quantity']:g}"
+                )
+
+            st.caption(" · ".join(replay_items))
+            if st.button(
+                "🔁 Repeat Yesterday's Purchases",
+                type="primary",
+                use_container_width=True,
+                key="repeat_yesterday_market",
+            ):
+                repeat_yesterday_market_purchases()
+            st.markdown('</div>', unsafe_allow_html=True)
 
         cols = st.columns(3)
         prices = [
