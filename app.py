@@ -368,6 +368,13 @@ ensure_state("total_revenue", 0.0)
 ensure_state("total_cups_sold", 0)
 ensure_state("location_types", ["Neighborhood"])
 ensure_state("competitors", [])
+ensure_state("market_event", {"key": "normal", "icon": "🌤️", "name": "Normal Day", "copy": "Normal customer traffic."})
+ensure_state("rent_hike_chance", 0.03)
+ensure_state("security_level", 0)
+ensure_state("insurance_active", False)
+ensure_state("insurance_fee", 0.0)
+ensure_state("victory", False)
+ensure_state("victory_achieved_day", None)
 # The intro screen renders the hero before a game has been started.
 # Give it a safe initial day so the UI never depends on game-start initialization.
 ensure_state("day", 1)
@@ -409,7 +416,13 @@ def init_game_state(name):
 
     st.session_state.coolers = 0
     st.session_state.canopies = 0
+    st.session_state.security_level = 0
+    st.session_state.insurance_active = False
+    st.session_state.insurance_fee = 0.0
     st.session_state.wages = 0
+    st.session_state.rent_hike_chance = 0.03
+    st.session_state.victory = False
+    st.session_state.victory_achieved_day = None
     st.session_state.searchEngineCampaignDays = 0
     st.session_state.socialMediaCampaignDays = 0
     st.session_state.billboardCampaignDays = 0
@@ -436,6 +449,93 @@ def init_game_state(name):
     update_prices()
 
 
+MARKET_EVENTS = {
+    "normal": {
+        "icon": "🌤️",
+        "name": "Normal Day",
+        "copy": "Normal customer traffic.",
+        "demand_factor": 1.00,
+        "sugar_loss_multiplier": 0.00,
+    },
+    "heatwave": {
+        "icon": "☀️",
+        "name": "Heat Wave",
+        "copy": "Hot weather is bringing more customers out for lemonade.",
+        "demand_factor": 1.28,
+        "sugar_loss_multiplier": 0.00,
+    },
+    "rainstorm": {
+        "icon": "🌧️",
+        "name": "Rainstorm",
+        "copy": "Rain is keeping customers home and threatens exposed sugar.",
+        "demand_factor": 0.72,
+        "sugar_loss_multiplier": 1.00,
+    },
+    "cold_snap": {
+        "icon": "🥶",
+        "name": "Cold Snap",
+        "copy": "Cold weather is reducing lemonade demand.",
+        "demand_factor": 0.68,
+        "sugar_loss_multiplier": 0.00,
+    },
+    "festival": {
+        "icon": "🎪",
+        "name": "Street Festival",
+        "copy": "Foot traffic is unusually strong today.",
+        "demand_factor": 1.35,
+        "sugar_loss_multiplier": 0.00,
+    },
+    "price_war": {
+        "icon": "📉",
+        "name": "Rival Price War",
+        "copy": "Competitors are cutting prices. Premium pricing will be harder today.",
+        "demand_factor": 0.92,
+        "sugar_loss_multiplier": 0.00,
+    },
+}
+
+
+def choose_market_event():
+    weekend = st.session_state.day % 7 in (0, 6)
+    keys = ["normal", "heatwave", "rainstorm", "cold_snap", "festival", "price_war"]
+    weights = [38, 16, 12, 8, 20, 6] if weekend else [48, 13, 12, 10, 10, 7]
+    return random.choices(keys, weights=weights, k=1)[0]
+
+
+def net_worth():
+    inventory_value = (
+        st.session_state.lemons * st.session_state.lemPrice
+        + st.session_state.sugar * st.session_state.sugPrice
+        + st.session_state.cups * st.session_state.cupPrice
+    )
+    debt = st.session_state.loanAmount if st.session_state.loan == 1 else 0.0
+    return round(st.session_state.cash + st.session_state.account + inventory_value - debt, 2)
+
+
+def victory_progress():
+    return min(10000.0, net_worth()), 10000.0, 60
+
+
+def check_victory():
+    if st.session_state.victory:
+        return
+    current, goal, deadline = victory_progress()
+    if current >= goal and st.session_state.day <= deadline:
+        st.session_state.victory = True
+        st.session_state.victory_achieved_day = st.session_state.day
+        st.session_state.current_screen = "victory"
+
+
+def robbery_probability():
+    if st.session_state.security_level:
+        return 0.0175
+    return 0.04
+
+
+def robbery_loss_fraction():
+    return random.uniform(0.10, 0.80) * (0.20 if st.session_state.insurance_active else 1.0)
+
+
 def update_prices():
     """Generate today's market prices. Prices are never used as a forecast."""
     lem_change = random.uniform(-0.08, 0.11)
@@ -460,6 +560,9 @@ def update_prices():
     st.session_state.billboardPrice = 650 + random.randint(-25, 85)
 
     update_competitors()
+
+    event_key = choose_market_event()
+    st.session_state.market_event = {"key": event_key, **MARKET_EVENTS[event_key]}
 
     # Keep a bounded market history for the price chart.
     st.session_state.market_history.append(
@@ -907,6 +1010,62 @@ def record_market_purchase(item, quantity, discount):
     )
 
 
+def render_today_business_signals():
+    event = st.session_state.market_event
+    sale_price = float(st.session_state.sale_price)
+    unit_cost = estimated_unit_cost()
+    gross_profit = round(sale_price - unit_cost, 2)
+    margin = (gross_profit / sale_price) if sale_price > 0 else 0.0
+    competitor = competitor_average_price()
+    weekend = st.session_state.day % 7 in (0, 6)
+
+    st.markdown('<div class="card">', unsafe_allow_html=True)
+    st.markdown("<div class=\"section-kicker\">TODAY'S BUSINESS SIGNALS</div>", unsafe_allow_html=True)
+    st.markdown(f"### {event['icon']} {event['name']}")
+    st.caption(event['copy'] + (" Weekend foot traffic is elevated." if weekend else ""))
+    cols = st.columns(4)
+    with cols[0]:
+        st.metric("Cost / cup", format_money(unit_cost))
+    with cols[1]:
+        st.metric("Gross profit / cup", format_money(gross_profit))
+    with cols[2]:
+        st.metric("Gross margin", f"{margin * 100:.0f}%")
+    with cols[3]:
+        gap = sale_price - competitor if competitor else 0.0
+        st.metric("Price vs rivals", format_money(gap))
+    st.markdown('</div>', unsafe_allow_html=True)
+
+
+def render_risk_panel():
+    st.markdown('<div class="card">', unsafe_allow_html=True)
+    st.markdown('<div class="section-kicker">BUSINESS RISKS</div>', unsafe_allow_html=True)
+    cols = st.columns(3)
+    with cols[0]:
+        st.metric("Robbery chance", f"{robbery_probability() * 100:.1f}% / day")
+    with cols[1]:
+        st.metric("Rent-hike chance", f"{st.session_state.rent_hike_chance * 100:.1f}% / day")
+    with cols[2]:
+        st.metric("Net worth", format_money(net_worth()))
+    st.caption("Security reduces robbery frequency; insurance reduces the loss severity. Rent risk is explicit so you can plan around it.")
+    st.markdown('</div>', unsafe_allow_html=True)
+
+
+def sell_inventory(item, quantity):
+    price_map = {
+        "lemons": st.session_state.lemPrice,
+        "sugar": st.session_state.sugPrice,
+        "cups": st.session_state.cupPrice,
+    }
+    state_key = item
+    quantity = min(quantity, st.session_state[state_key])
+    if quantity <= 0:
+        return 0.0
+    proceeds = round(quantity * price_map[item] * 0.55, 2)
+    st.session_state[state_key] -= quantity
+    st.session_state.cash += proceeds
+    return proceeds
+
+
 def buy_lemons(quantity, discount=0, rerun=True):
     cost = round(quantity * st.session_state.lemPrice * (1 - discount), 2)
     if cost <= st.session_state.cash:
@@ -1002,8 +1161,10 @@ def simulate_day(sale_price):
 
     location = location_stats()
     competitor_price = competitor_average_price()
+    event = st.session_state.market_event
+    weekend_factor = 1.12 if st.session_state.day % 7 in (0, 6) else 1.00
 
-    # Demand remains hidden until the day is simulated.
+    # Demand remains hidden until the day is simulated; business signals are visible before play.
     effective_price_gap = (5.85 * location["price_tolerance"]) - sale_price
     if effective_price_gap < 0:
         sales_demand = 0
@@ -1017,10 +1178,12 @@ def simulate_day(sale_price):
         elif sale_price > competitor_price:
             competitor_factor = max(0.65, 1 - 0.45 * (sale_price - competitor_price) / competitor_price)
 
-    weather_event = random.randint(1, 15) == 12
-    weather_factor = 1.0
-    if weather_event:
-        weather_factor = max(0.55, 1.0 - 0.18 * location["weather"])
+    event_factor = event["demand_factor"]
+    if event["key"] == "price_war" and sale_price > competitor_price:
+        event_factor *= 0.90
+
+    weather_event = event["key"] == "rainstorm"
+    weather_factor = max(0.50, 1.0 - 0.16 * location["weather"]) if weather_event else 1.0
 
     demand = int(
         sales_demand
@@ -1029,6 +1192,8 @@ def simulate_day(sale_price):
         * random.uniform(0.85, 1.2)
         * competitor_factor
         * weather_factor
+        * event_factor
+        * weekend_factor
         * (1 + marketing_effect / 50)
     )
 
@@ -1064,12 +1229,18 @@ def simulate_day(sale_price):
         "unit_cost": unit_cost,
         "competitor_price": competitor_price,
         "competitor_factor": competitor_factor,
+        "market_event": event["name"],
+        "market_event_icon": event["icon"],
+        "event_factor": event_factor,
+        "weekend_factor": weekend_factor,
         "weather_event": weather_event,
+        "robbery_probability": robbery_probability(),
         "location_demand": location["demand"],
         "location_price_tolerance": location["price_tolerance"],
         "left_lemons_gone_bad": 0,
         "rent_paid": location["rent"],
         "wages_paid": st.session_state.wages,
+        "insurance_paid": 0.0,
         "robbed_amount": 0,
         "sugar_melted": 0.0,
         "cash_start": cash_start,
@@ -1085,9 +1256,8 @@ def simulate_day(sale_price):
         summary["left_lemons_gone_bad"] = left_lemons
         st.session_state.lemons -= left_lemons
 
-    # Rent hike
-    rent_hike = random.randint(min(st.session_state.day, 50), 70)
-    if rent_hike == 50:
+    # Rent hike: transparent fixed daily probability.
+    if random.random() < st.session_state.rent_hike_chance:
         st.session_state.rent += 5
         summary["rent_hiked"] = True
         summary["rent_hike_amount"] = 5
@@ -1116,12 +1286,12 @@ def simulate_day(sale_price):
     if st.session_state.account > 0:
         st.session_state.account *= 1 + st.session_state.savingsInterest
 
-    # Rain
+    # Rain affects both demand and exposed sugar inventory.
     if weather_event:
         sugar_loss_rate = max(
             0,
             0.5 - 0.5 * (st.session_state.canopies / max(1, st.session_state.locations)),
-        ) * location["weather"]
+        ) * location["weather"] * event["sugar_loss_multiplier"]
         sugar_lost = round(st.session_state.sugar * min(0.85, sugar_loss_rate), 2)
         summary["sugar_melted"] = sugar_lost
         st.session_state.sugar -= sugar_lost
@@ -1157,19 +1327,22 @@ def simulate_day(sale_price):
     st.session_state.sales_history = st.session_state.sales_history[-30:]
 
     st.session_state.maxcash = max(st.session_state.maxcash, st.session_state.cash)
+    check_victory()
 
-    if st.session_state.cash <= 0:
+    if st.session_state.cash <= 0 and not st.session_state.victory:
         st.session_state.game_over = True
+        st.session_state.current_screen = "day_summary"
+    elif st.session_state.victory:
+        st.session_state.current_screen = "victory"
     else:
         st.session_state.yesterday_market_purchases = [
             item.copy() for item in st.session_state.today_market_purchases
         ]
         st.session_state.today_market_purchases = []
-
         st.session_state.day += 1
         update_prices()
+        st.session_state.current_screen = "day_summary"
 
-    st.session_state.current_screen = "day_summary"
     st.rerun()
 
 
@@ -1217,7 +1390,7 @@ if not st.session_state.game_started and not st.session_state.game_over:
 # ============================================================
 # MAIN GAME
 # ============================================================
-elif st.session_state.game_started and (not st.session_state.game_over or st.session_state.current_screen == "day_summary"):
+elif st.session_state.game_started and (not st.session_state.game_over or st.session_state.current_screen == "day_summary") and st.session_state.current_screen != "victory":
     st.session_state.marketingEffect = current_marketing_effect()
 
     render_hero(
@@ -1234,6 +1407,11 @@ elif st.session_state.game_started and (not st.session_state.game_over or st.ses
     # ========================================================
     if st.session_state.current_screen == "main_menu":
         render_last_day()
+        event = st.session_state.market_event
+        st.markdown(
+            f'<div class="event good"><strong>{event["icon"]} {event["name"]}:</strong> {event["copy"]}</div>',
+            unsafe_allow_html=True,
+        )
 
         st.markdown('<div class="section-kicker">YOUR TOWN</div>', unsafe_allow_html=True)
         st.markdown("### Run the empire")
@@ -1281,6 +1459,8 @@ elif st.session_state.game_started and (not st.session_state.game_over or st.ses
                 st.markdown('<div class="card"><div class="section-kicker">ACTIVE CAMPAIGNS</div>' + "".join(f'<span class="pill">📢 {x}</span>' for x in active) + '</div>', unsafe_allow_html=True)
 
         render_price_history()
+        render_today_business_signals()
+        render_risk_panel()
 
         st.markdown("### ☀️ Prepare for Today")
         left, right = st.columns([1.1, .9])
@@ -1373,6 +1553,16 @@ elif st.session_state.game_started and (not st.session_state.game_over or st.ses
                     f'<div class="event"><strong>👷 Wages paid:</strong> −{format_money(summary["wages_paid"])}</div>',
                     unsafe_allow_html=True,
                 )
+            if summary.get("insurance_paid", 0) > 0:
+                st.markdown(
+                    f"<div class=\"event\"><strong>🛡️ Insurance:</strong> −{format_money(summary['insurance_paid'])}</div>",
+                    unsafe_allow_html=True,
+                )
+            st.markdown(
+                f"<div class=\"event\"><strong>{summary['market_event_icon']} {summary['market_event']}:</strong> Demand factor {summary['event_factor']:.2f}×</div>",
+                unsafe_allow_html=True,
+            )
+
             if summary["left_lemons_gone_bad"] > 0:
                 st.markdown(
                     f'<div class="event warning"><strong>🍋 Spoiled lemons:</strong> {summary["left_lemons_gone_bad"]} lost</div>',
@@ -1496,6 +1686,27 @@ elif st.session_state.game_started and (not st.session_state.game_over or st.ses
                 with col:
                     if st.button(f"Buy {label} · {format_money(total)}", key=f"buy_{title}_{label}", use_container_width=True):
                         purchase_fn(qty, discount)
+
+        st.markdown("### ♻️ Sell Excess Inventory")
+        st.caption("Sell ingredients back for 55% of today's market price. This gives you liquidity without making overbuying risk-free.")
+        sell_cols = st.columns(3)
+        with sell_cols[0]:
+            sell_lemons = st.number_input("Lemons to sell", min_value=0, max_value=int(st.session_state.lemons), value=0, step=1, key="sell_lemons")
+        with sell_cols[1]:
+            sell_sugar = st.number_input("Sugar to sell (kg)", min_value=0.0, max_value=float(st.session_state.sugar), value=0.0, step=0.5, key="sell_sugar")
+        with sell_cols[2]:
+            sell_cups = st.number_input("Cups to sell", min_value=0, max_value=int(st.session_state.cups), value=0, step=1, key="sell_cups")
+        if st.button("Sell Selected Inventory · 55% of Market Price", use_container_width=True, key="sell_inventory"):
+            proceeds = (
+                sell_inventory("lemons", sell_lemons)
+                + sell_inventory("sugar", sell_sugar)
+                + sell_inventory("cups", sell_cups)
+            )
+            if proceeds > 0:
+                st.success(f"Sold excess inventory for {format_money(proceeds)}.")
+                st.rerun()
+            else:
+                st.info("Select some inventory to sell.")
 
         render_market_chart()
         if st.button("↩️ Back to Town", use_container_width=True):
@@ -1662,6 +1873,51 @@ elif st.session_state.game_started and (not st.session_state.game_over or st.ses
         with cols[3]:
             st.markdown(
                 f"""<div class="upgrade-card">
+                <div class="upgrade-icon">🔐</div>
+                <div class="upgrade-name">Security System</div>
+                <div class="upgrade-copy">Reduces robbery probability from 4% to 1.75%.</div>
+                <div class="pill">Owned: {st.session_state.security_level > 0}</div>
+                </div>""",
+                unsafe_allow_html=True,
+            )
+            if st.button(
+                "Buy Security System · $150" if st.session_state.security_level == 0 else "Security System Installed",
+                key="upgrade_security",
+                use_container_width=True,
+                disabled=st.session_state.security_level > 0,
+            ):
+                if st.session_state.cash >= 150:
+                    st.session_state.cash -= 150
+                    st.session_state.security_level = 1
+                    st.toast("🔐 Security system installed!")
+                    st.rerun()
+                st.error("Insufficient funds.")
+
+        security_cols = st.columns(2)
+        with security_cols[0]:
+            st.markdown(
+                f"""<div class="upgrade-card">
+                <div class="upgrade-icon">🛡️</div>
+                <div class="upgrade-name">Insurance Plan</div>
+                <div class="upgrade-copy">Costs $8/day and reduces robbery losses by 80%.</div>
+                <div class="pill">Active: {st.session_state.insurance_active}</div>
+                </div>""",
+                unsafe_allow_html=True,
+            )
+            if st.button(
+                "Activate Insurance · $8/day" if not st.session_state.insurance_active else "Insurance Active",
+                key="toggle_insurance",
+                use_container_width=True,
+                disabled=st.session_state.insurance_active,
+            ):
+                st.session_state.insurance_active = True
+                st.session_state.insurance_fee = 8.0
+                st.toast("🛡️ Insurance activated.")
+                st.rerun()
+
+        with security_cols[1]:
+            st.markdown(
+                f"""<div class="upgrade-card">
                 <div class="upgrade-icon">🗺️</div>
                 <div class="upgrade-name">Current Footprint</div>
                 <div class="upgrade-copy">Locations now shape demand, pricing power, rent, and weather exposure.</div>
@@ -1744,6 +2000,33 @@ elif st.session_state.game_started and (not st.session_state.game_over or st.ses
 # ============================================================
 # GAME OVER
 # ============================================================
+elif st.session_state.current_screen == "victory" and st.session_state.victory:
+    st.markdown(
+        f"""
+        <div class="game-over" style="background:linear-gradient(145deg,#FFF4A9,#EAF4E8);border-color:#D4DFAE;">
+            <div style="font-size:4rem;">🍋👑</div>
+            <div class="section-kicker">MILESTONE ACHIEVED</div>
+            <h1 style="margin:4px 0;">Lemonade Tycoon</h1>
+            <div style="font-size:1rem;color:#687568;">You reached {format_money(victory_progress()[1])} net worth by Day {st.session_state.victory_achieved_day}.</div>
+            <div style="margin-top:16px;">Net worth: <strong>{format_money(net_worth())}</strong></div>
+            <div style="margin-top:8px;color:#5F6E60;">You can keep playing and build beyond the first victory milestone.</div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+    cols = st.columns(2)
+    with cols[0]:
+        if st.button("🏙️ Keep Playing", type="primary", use_container_width=True):
+            st.session_state.current_screen = "main_menu"
+            st.rerun()
+    with cols[1]:
+        if st.button("🍋 New Empire", use_container_width=True):
+            st.session_state.game_started = False
+            st.session_state.game_over = False
+            st.session_state.victory = False
+            st.session_state.current_screen = "main_menu"
+            st.rerun()
+
 elif st.session_state.game_over:
     st.markdown(
         f"""
