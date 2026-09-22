@@ -363,6 +363,11 @@ ensure_state("player_name", "")
 ensure_state("current_screen", "main_menu")
 ensure_state("today_market_purchases", [])
 ensure_state("yesterday_market_purchases", [])
+ensure_state("total_market_spend", 0.0)
+ensure_state("total_revenue", 0.0)
+ensure_state("total_cups_sold", 0)
+ensure_state("location_types", ["Neighborhood"])
+ensure_state("competitors", [])
 # The intro screen renders the hero before a game has been started.
 # Give it a safe initial day so the UI never depends on game-start initialization.
 ensure_state("day", 1)
@@ -383,6 +388,7 @@ def init_game_state(name):
 
     st.session_state.day = 1
     st.session_state.locations = 1
+    st.session_state.location_types = ["Neighborhood"]
 
     st.session_state.yestLemPrice = 0.65
     st.session_state.yestSugPrice = 1.25
@@ -409,15 +415,19 @@ def init_game_state(name):
     st.session_state.billboardCampaignDays = 0
     st.session_state.radioCampaignDays = 0
 
-    # New presentation/history state.
+    # Business intelligence / strategy state.
     st.session_state.sales_history = []
     st.session_state.market_history = []
-
-    # Record each market transaction so yesterday's exact purchases
-    # (including bundle discounts) can be repeated on the next day.
     st.session_state.today_market_purchases = []
     st.session_state.yesterday_market_purchases = []
-
+    st.session_state.total_market_spend = 0.0
+    st.session_state.total_revenue = 0.0
+    st.session_state.total_cups_sold = 0
+    st.session_state.competitors = [
+        {"name": "Lemon Larry's", "style": "Value", "price": 0.62, "volatility": 0.05},
+        {"name": "Fresh Squeeze", "style": "Premium", "price": 0.95, "volatility": 0.035},
+        {"name": "Campus Cups", "style": "Volume", "price": 0.58, "volatility": 0.045},
+    ]
     st.session_state.summary = None
     st.session_state.current_screen = "main_menu"
     st.session_state.game_started = True
@@ -448,6 +458,8 @@ def update_prices():
     st.session_state.searchEnginePrice = 30 + random.randint(-5, 15)
     st.session_state.socialMediaPrice = 55 + random.randint(-10, 25)
     st.session_state.billboardPrice = 650 + random.randint(-25, 85)
+
+    update_competitors()
 
     # Keep a bounded market history for the price chart.
     st.session_state.market_history.append(
@@ -501,6 +513,105 @@ def current_marketing_effect():
 
 def format_money(value):
     return f"${value:,.2f}"
+
+
+LOCATION_PROFILES = {
+    "Neighborhood": {
+        "icon": "🏘️",
+        "demand": 1.00,
+        "price_tolerance": 1.00,
+        "rent": 10,
+        "weather": 1.00,
+        "copy": "Reliable local traffic and low rent.",
+    },
+    "Park": {
+        "icon": "🌳",
+        "demand": 1.18,
+        "price_tolerance": 0.92,
+        "rent": 16,
+        "weather": 1.25,
+        "copy": "Strong foot traffic, but weather matters.",
+    },
+    "Downtown": {
+        "icon": "🏙️",
+        "demand": 1.28,
+        "price_tolerance": 1.16,
+        "rent": 28,
+        "weather": 0.90,
+        "copy": "Busy traffic and customers tolerate higher prices.",
+    },
+    "University": {
+        "icon": "🎓",
+        "demand": 1.34,
+        "price_tolerance": 0.86,
+        "rent": 20,
+        "weather": 0.95,
+        "copy": "Huge volume, but price-sensitive students.",
+    },
+    "Beach": {
+        "icon": "🏖️",
+        "demand": 1.40,
+        "price_tolerance": 1.02,
+        "rent": 32,
+        "weather": 1.45,
+        "copy": "Excellent on sunny days; rain hurts badly.",
+    },
+}
+
+
+def location_stats():
+    profiles = [LOCATION_PROFILES[name] for name in st.session_state.location_types]
+    return {
+        "demand": sum(profile["demand"] for profile in profiles),
+        "price_tolerance": sum(profile["price_tolerance"] for profile in profiles) / max(1, len(profiles)),
+        "rent": sum(profile["rent"] for profile in profiles),
+        "weather": sum(profile["weather"] for profile in profiles) / max(1, len(profiles)),
+    }
+
+
+def competitor_average_price():
+    competitors = st.session_state.get("competitors", [])
+    if not competitors:
+        return 0.0
+    return sum(item["price"] for item in competitors) / len(competitors)
+
+
+def update_competitors():
+    """Move competitor prices and make each competitor react differently."""
+    player_price = float(st.session_state.get("sale_price", 0.50))
+
+    for competitor in st.session_state.competitors:
+        baseline = competitor["price"]
+
+        if competitor["style"] == "Value":
+            target = max(0.35, min(0.95, player_price - 0.08))
+        elif competitor["style"] == "Premium":
+            target = max(0.65, min(1.35, player_price + 0.14))
+        else:
+            target = max(0.40, min(1.00, player_price - 0.02))
+
+        movement = (target - baseline) * 0.25
+        noise = random.uniform(-competitor["volatility"], competitor["volatility"])
+        competitor["price"] = round(max(0.30, baseline + movement + noise), 2)
+
+
+def estimated_unit_cost():
+    """Replacement cost for one cup using today's ingredient prices."""
+    return round(
+        (
+            5 * st.session_state.lemPrice
+            + 0.5 * st.session_state.sugPrice
+            + st.session_state.cupPrice
+        ) / 8,
+        2,
+    )
+
+
+def location_name_counts():
+    counts = {}
+    for location in st.session_state.location_types:
+        counts[location] = counts.get(location, 0) + 1
+    return counts
 
 
 def empire_level():
@@ -693,8 +804,100 @@ def render_market_chart():
     st.line_chart(df, height=240)
 
 
+def render_business_insights():
+    unit_cost = estimated_unit_cost()
+    sale_price = float(st.session_state.sale_price)
+    gross_profit_per_cup = round(sale_price - unit_cost, 2)
+    gross_margin = gross_profit_per_cup / sale_price if sale_price > 0 else 0
+    avg_competitor = competitor_average_price()
+    total_revenue = st.session_state.total_revenue
+    total_spend = st.session_state.total_market_spend
+    avg_revenue_per_cup = (
+        total_revenue / st.session_state.total_cups_sold
+        if st.session_state.total_cups_sold
+        else 0
+    )
+
+    st.markdown("### 💡 Unit Economics")
+    cols = st.columns(4)
+    metrics = [
+        ("Cost / cup", format_money(unit_cost), "Today's replacement cost"),
+        ("Gross profit / cup", format_money(gross_profit_per_cup), "At your current price"),
+        ("Gross margin", f"{gross_margin * 100:.0f}%", "Before rent and marketing"),
+        ("Break-even price", format_money(unit_cost), "Below this, each cup loses money"),
+    ]
+    for col, (label, value, copy) in zip(cols, metrics):
+        with col:
+            st.metric(label, value)
+            st.caption(copy)
+
+    st.markdown("### 📈 Business Performance")
+    cols = st.columns(4)
+    metrics = [
+        ("Lifetime revenue", format_money(total_revenue)),
+        ("Cups sold", f"{st.session_state.total_cups_sold:,}"),
+        ("Revenue / cup", format_money(avg_revenue_per_cup)),
+        ("Market spend", format_money(total_spend)),
+    ]
+    for col, (label, value) in zip(cols, metrics):
+        with col:
+            st.metric(label, value)
+
+    st.markdown("### 🏁 Competitive Position")
+    cols = st.columns(3)
+    with cols[0]:
+        st.metric("Your price", format_money(sale_price))
+    with cols[1]:
+        st.metric("Competitor average", format_money(avg_competitor))
+    with cols[2]:
+        if avg_competitor:
+            gap = sale_price - avg_competitor
+            st.metric("Price gap", format_money(gap), delta_color="inverse")
+        else:
+            st.metric("Price gap", "—")
+
+    rows = []
+    for competitor in st.session_state.competitors:
+        rows.append(
+            {
+                "Competitor": competitor["name"],
+                "Style": competitor["style"],
+                "Price": format_money(competitor["price"]),
+                "Position": (
+                    "Cheaper than you"
+                    if competitor["price"] < sale_price
+                    else "Pricier than you"
+                ),
+            }
+        )
+    if rows:
+        st.dataframe(
+            pd.DataFrame(rows),
+            use_container_width=True,
+            hide_index=True,
+        )
+
+    st.markdown("### 📍 Your Locations")
+    location_rows = []
+    for name, count in location_name_counts().items():
+        profile = LOCATION_PROFILES[name]
+        location_rows.append(
+            {
+                "Location": f"{profile['icon']} {name}",
+                "Count": count,
+                "Demand": f"{profile['demand']:.2f}×",
+                "Price tolerance": f"{profile['price_tolerance']:.2f}×",
+                "Rent": format_money(profile["rent"]),
+            }
+        )
+    st.dataframe(
+        pd.DataFrame(location_rows),
+        use_container_width=True,
+        hide_index=True,
+    )
+
+
 def record_market_purchase(item, quantity, discount):
-    """Remember one successful market transaction for replay tomorrow."""
     st.session_state.today_market_purchases.append(
         {
             "item": item,
@@ -709,6 +912,7 @@ def buy_lemons(quantity, discount=0, rerun=True):
     if cost <= st.session_state.cash:
         st.session_state.cash -= cost
         st.session_state.lemons += quantity
+        st.session_state.total_market_spend += cost
         record_market_purchase("lemons", quantity, discount)
         st.toast(f"🍋 Bought {quantity} lemons for {format_money(cost)}")
         if rerun:
@@ -722,6 +926,7 @@ def buy_sugar(quantity, discount=0, rerun=True):
     if cost <= st.session_state.cash:
         st.session_state.cash -= cost
         st.session_state.sugar += quantity
+        st.session_state.total_market_spend += cost
         record_market_purchase("sugar", quantity, discount)
         st.toast(f"🍬 Bought {quantity:g}kg sugar for {format_money(cost)}")
         if rerun:
@@ -735,6 +940,7 @@ def buy_cups(quantity, discount=0, rerun=True):
     if cost <= st.session_state.cash:
         st.session_state.cash -= cost
         st.session_state.cups += quantity
+        st.session_state.total_market_spend += cost
         record_market_purchase("cups", quantity, discount)
         st.toast(f"🥤 Bought {quantity} cups for {format_money(cost)}")
         if rerun:
@@ -744,9 +950,7 @@ def buy_cups(quantity, discount=0, rerun=True):
 
 
 def repeat_yesterday_market_purchases():
-    """Repeat yesterday's exact market transactions using today's prices."""
     purchases = st.session_state.yesterday_market_purchases
-
     if not purchases:
         st.info("You didn't make any market purchases yesterday.")
         return
@@ -757,60 +961,32 @@ def repeat_yesterday_market_purchases():
         "cups": st.session_state.cupPrice,
     }
 
-    labels = {
-        "lemons": "🍋 Lemons",
-        "sugar": "🍬 Sugar",
-        "cups": "🥤 Cups",
-    }
-
-    total_cost = 0.0
-    for purchase in purchases:
-        total_cost += (
-            purchase["quantity"]
-            * price_map[purchase["item"]]
-            * (1 - purchase["discount"])
-        )
-    total_cost = round(total_cost, 2)
+    total_cost = round(
+        sum(
+            item["quantity"] * price_map[item["item"]] * (1 - item["discount"])
+            for item in purchases
+        ),
+        2,
+    )
 
     if total_cost > st.session_state.cash:
-        st.error(
-            f"Not enough cash to repeat yesterday's purchases. "
-            f"You need {format_money(total_cost)}."
-        )
+        st.error(f"Not enough cash. You need {format_money(total_cost)}.")
         return
 
-    # All-or-nothing purchase: calculate everything first, then apply it.
     st.session_state.cash -= total_cost
 
-    for purchase in purchases:
-        item = purchase["item"]
-        quantity = purchase["quantity"]
-
-        if item == "lemons":
+    for item in purchases:
+        quantity = item["quantity"]
+        if item["item"] == "lemons":
             st.session_state.lemons += quantity
-        elif item == "sugar":
+        elif item["item"] == "sugar":
             st.session_state.sugar += quantity
-        elif item == "cups":
+        elif item["item"] == "cups":
             st.session_state.cups += quantity
+        record_market_purchase(item["item"], quantity, item["discount"])
 
-        # The replay itself becomes part of today's purchase history,
-        # so it can be repeated again tomorrow.
-        record_market_purchase(
-            item,
-            quantity,
-            purchase["discount"],
-        )
-
-    breakdown = []
-    for purchase in purchases:
-        breakdown.append(
-            f"{labels[purchase['item']]} × {purchase['quantity']:g}"
-        )
-
-    st.success(
-        f"🔁 Repeated yesterday's purchases for {format_money(total_cost)}"
-    )
-    st.caption(" · ".join(breakdown))
+    st.session_state.total_market_spend += total_cost
+    st.toast(f"🔁 Repeated yesterday's basket for {format_money(total_cost)}")
     st.rerun()
 
 
@@ -824,17 +1000,35 @@ def simulate_day(sale_price):
     marketing_effect = current_marketing_effect()
     st.session_state.marketingEffect = marketing_effect
 
+    location = location_stats()
+    competitor_price = competitor_average_price()
+
     # Demand remains hidden until the day is simulated.
-    if (5.85 - sale_price) < 0:
+    effective_price_gap = (5.85 * location["price_tolerance"]) - sale_price
+    if effective_price_gap < 0:
         sales_demand = 0
     else:
-        sales_demand = int(1.45 * (5.85 - sale_price) ** 2)
+        sales_demand = int(1.45 * effective_price_gap ** 2)
+
+    competitor_factor = 1.0
+    if competitor_price > 0:
+        if sale_price < competitor_price:
+            competitor_factor = min(1.15, 1 + 0.35 * (competitor_price - sale_price) / competitor_price)
+        elif sale_price > competitor_price:
+            competitor_factor = max(0.65, 1 - 0.45 * (sale_price - competitor_price) / competitor_price)
+
+    weather_event = random.randint(1, 15) == 12
+    weather_factor = 1.0
+    if weather_event:
+        weather_factor = max(0.55, 1.0 - 0.18 * location["weather"])
 
     demand = int(
         sales_demand
         * random.uniform(0.72, 1.45)
-        * st.session_state.locations
+        * location["demand"]
         * random.uniform(0.85, 1.2)
+        * competitor_factor
+        * weather_factor
         * (1 + marketing_effect / 50)
     )
 
@@ -853,14 +1047,28 @@ def simulate_day(sale_price):
 
     st.session_state.cash += revenue
 
+    unit_cost = estimated_unit_cost()
+    estimated_cogs = round(cups_sold * unit_cost, 2)
+    gross_profit = round(revenue - estimated_cogs, 2)
+    gross_margin = (gross_profit / revenue) if revenue > 0 else 0.0
+
     summary = {
         "day": st.session_state.day,
         "price": sale_price,
         "demand": demand,
         "cups_sold": cups_sold,
         "revenue": revenue,
+        "estimated_cogs": estimated_cogs,
+        "gross_profit": gross_profit,
+        "gross_margin": gross_margin,
+        "unit_cost": unit_cost,
+        "competitor_price": competitor_price,
+        "competitor_factor": competitor_factor,
+        "weather_event": weather_event,
+        "location_demand": location["demand"],
+        "location_price_tolerance": location["price_tolerance"],
         "left_lemons_gone_bad": 0,
-        "rent_paid": st.session_state.rent * st.session_state.locations,
+        "rent_paid": location["rent"],
         "wages_paid": st.session_state.wages,
         "robbed_amount": 0,
         "sugar_melted": 0.0,
@@ -871,7 +1079,7 @@ def simulate_day(sale_price):
     if st.session_state.lemons > 0:
         rot_factor = max(
             0,
-            0.5 - 0.4 * (st.session_state.coolers / st.session_state.locations),
+            0.5 - 0.4 * (st.session_state.coolers / max(1, st.session_state.locations)),
         )
         left_lemons = int(round(st.session_state.lemons * rot_factor))
         summary["left_lemons_gone_bad"] = left_lemons
@@ -887,7 +1095,10 @@ def simulate_day(sale_price):
         summary["rent_hiked"] = False
         summary["rent_hike_amount"] = 0
 
-    rent_paid = st.session_state.rent * st.session_state.locations
+    rent_paid = sum(
+        LOCATION_PROFILES[name]["rent"]
+        for name in st.session_state.location_types
+    ) + (max(0, st.session_state.rent - 10) * st.session_state.locations)
     summary["rent_paid"] = rent_paid
     st.session_state.cash -= rent_paid
 
@@ -906,12 +1117,12 @@ def simulate_day(sale_price):
         st.session_state.account *= 1 + st.session_state.savingsInterest
 
     # Rain
-    if random.randint(1, 15) == 12:
-        sugar_lost = round(
-            st.session_state.sugar
-            * (0.5 - 0.5 * (st.session_state.canopies / st.session_state.locations)),
-            2,
-        )
+    if weather_event:
+        sugar_loss_rate = max(
+            0,
+            0.5 - 0.5 * (st.session_state.canopies / max(1, st.session_state.locations)),
+        ) * location["weather"]
+        sugar_lost = round(st.session_state.sugar * min(0.85, sugar_loss_rate), 2)
         summary["sugar_melted"] = sugar_lost
         st.session_state.sugar -= sugar_lost
 
@@ -938,6 +1149,9 @@ def simulate_day(sale_price):
     summary["net_cash_change"] = st.session_state.cash - summary["cash_start"]
     summary["cash_after"] = st.session_state.cash
 
+    st.session_state.total_revenue += revenue
+    st.session_state.total_cups_sold += cups_sold
+
     st.session_state.summary = summary
     st.session_state.sales_history.append(summary.copy())
     st.session_state.sales_history = st.session_state.sales_history[-30:]
@@ -947,10 +1161,8 @@ def simulate_day(sale_price):
     if st.session_state.cash <= 0:
         st.session_state.game_over = True
     else:
-        # Today's exact market transactions become tomorrow's replay basket.
         st.session_state.yesterday_market_purchases = [
-            purchase.copy()
-            for purchase in st.session_state.today_market_purchases
+            item.copy() for item in st.session_state.today_market_purchases
         ]
         st.session_state.today_market_purchases = []
 
@@ -1026,11 +1238,12 @@ elif st.session_state.game_started and (not st.session_state.game_over or st.ses
         st.markdown('<div class="section-kicker">YOUR TOWN</div>', unsafe_allow_html=True)
         st.markdown("### Run the empire")
 
-        town = st.columns(4)
+        town = st.columns(5)
         buildings = [
             ("🏪", "Market", "Stock up on ingredients at today's prices.", "market"),
+            ("📊", "Business", "Understand margins, rivals, and locations.", "business"),
             ("🏦", "Lemon Bank", "Protect cash, earn interest, or borrow.", "bank"),
-            ("🏬", "Department Store", "Upgrade the stand and add locations.", "dept_store"),
+            ("🏬", "Department Store", "Choose stronger locations and upgrades.", "dept_store"),
             ("📢", "Marketing", "Buy campaigns that change customer demand.", "marketing"),
         ]
 
@@ -1127,12 +1340,13 @@ elif st.session_state.game_started and (not st.session_state.game_over or st.ses
             "Now you know what the market actually did.",
         )
 
-        cols = st.columns(4)
+        cols = st.columns(5)
         stats = [
             ("🏷️", "Price", format_money(summary["price"])),
             ("👥", "Demand", f"{summary['demand']} cups"),
             ("🥤", "Sold", f"{summary['cups_sold']} cups"),
             ("💰", "Revenue", format_money(summary["revenue"])),
+            ("📈", "Gross Profit", format_money(summary["gross_profit"])),
         ]
         for col, (icon, label, value) in zip(cols, stats):
             with col:
@@ -1179,12 +1393,21 @@ elif st.session_state.game_started and (not st.session_state.game_over or st.ses
                     f'<div class="event warning"><strong>🏠 Rent increased:</strong> +{format_money(summary["rent_hike_amount"])} per location</div>',
                     unsafe_allow_html=True,
                 )
+            if summary.get("weather_event"):
+                st.markdown(
+                    '<div class="event warning"><strong>🌦️ Weather:</strong> Rain reduced traffic and increased sugar exposure.</div>',
+                    unsafe_allow_html=True,
+                )
 
         with right:
             st.markdown("### 📈 What happened?")
             utilization = 0 if summary["demand"] == 0 else int(100 * summary["cups_sold"] / summary["demand"])
             st.metric("Demand captured", f"{utilization}%")
             st.caption("This tells you how much of the day's actual demand you fulfilled. It is not a forecast for tomorrow.")
+            st.metric("Gross margin", f"{summary['gross_margin'] * 100:.0f}%")
+            if summary["competitor_price"] > 0:
+                gap = summary["price"] - summary["competitor_price"]
+                st.metric("vs competitor average", format_money(gap), delta_color="inverse")
             st.metric("Cash after day", format_money(st.session_state.cash))
 
         render_price_history()
@@ -1204,27 +1427,15 @@ elif st.session_state.game_started and (not st.session_state.game_over or st.ses
         render_hero("The Market", "Buy ingredients now. Prices move from day to day.")
         show_recipe()
 
-        yesterday_purchases = st.session_state.yesterday_market_purchases
-        if yesterday_purchases:
+        if st.session_state.yesterday_market_purchases:
             st.markdown('<div class="card">', unsafe_allow_html=True)
-            st.markdown(
-                '<div class="section-kicker">YESTERDAY\'S MARKET</div>',
-                unsafe_allow_html=True,
-            )
-            st.markdown("### 🔁 Repeat yesterday's purchases")
-
-            replay_items = []
-            for purchase in yesterday_purchases:
-                item_name = {
-                    "lemons": "🍋 Lemons",
-                    "sugar": "🍬 Sugar",
-                    "cups": "🥤 Cups",
-                }[purchase["item"]]
-                replay_items.append(
-                    f"{item_name} × {purchase['quantity']:g}"
-                )
-
-            st.caption(" · ".join(replay_items))
+            st.markdown("<div class='section-kicker'>YESTERDAY'S BASKET</div>", unsafe_allow_html=True)
+            labels = {"lemons": "🍋 Lemons", "sugar": "🍬 Sugar", "cups": "🥤 Cups"}
+            basket = [
+                f"{labels[item['item']]} × {item['quantity']:g}"
+                for item in st.session_state.yesterday_market_purchases
+            ]
+            st.caption(" · ".join(basket))
             if st.button(
                 "🔁 Repeat Yesterday's Purchases",
                 type="primary",
@@ -1232,7 +1443,7 @@ elif st.session_state.game_started and (not st.session_state.game_over or st.ses
                 key="repeat_yesterday_market",
             ):
                 repeat_yesterday_market_purchases()
-            st.markdown('</div>', unsafe_allow_html=True)
+            st.markdown("</div>", unsafe_allow_html=True)
 
         cols = st.columns(3)
         prices = [
@@ -1287,6 +1498,21 @@ elif st.session_state.game_started and (not st.session_state.game_over or st.ses
                         purchase_fn(qty, discount)
 
         render_market_chart()
+        if st.button("↩️ Back to Town", use_container_width=True):
+            go("main_menu")
+
+    # ========================================================
+    # BUSINESS
+    # ========================================================
+    elif st.session_state.current_screen == "business":
+        render_hero(
+            "Business Intelligence",
+            "Know your economics. Watch your competitors. Decide where to expand.",
+        )
+        render_business_insights()
+        render_price_history()
+        render_market_chart()
+
         if st.button("↩️ Back to Town", use_container_width=True):
             go("main_menu")
 
@@ -1346,56 +1572,122 @@ elif st.session_state.game_started and (not st.session_state.game_over or st.ses
     # DEPARTMENT STORE
     # ========================================================
     elif st.session_state.current_screen == "dept_store":
-        render_hero("Department Store", "Build a stronger stand and expand your territory.")
-        cols = st.columns(3)
-        upgrades = [
-            ("🧊", "Lemon Cooler", "Reduces spoilage.", st.session_state.coolerPrice, "cooler"),
-            ("⛱️", "Stand Canopy", "Reduces losses when it rains.", st.session_state.canopyPrice, "canopy"),
-            ("🏪", "Additional Stand", "Adds another location and increases wages.", st.session_state.standPrice, "stand"),
-        ]
-        for col, (icon, name, copy, price, kind) in zip(cols, upgrades):
-            with col:
-                owned = {
-                    "cooler": st.session_state.coolers,
-                    "canopy": st.session_state.canopies,
-                    "stand": max(0, st.session_state.locations - 1),
-                }[kind]
-                st.markdown(
-                    f"""
-                    <div class="upgrade-card">
-                        <div class="upgrade-icon">{icon}</div>
-                        <div class="upgrade-name">{name}</div>
-                        <div class="upgrade-copy">{copy}</div>
-                        <div class="pill">Owned: {owned}</div>
-                    </div>
-                    """,
-                    unsafe_allow_html=True,
-                )
-                if kind == "cooler":
-                    if st.button(f"Buy Cooler · {format_money(price)}", key="upgrade_cooler", use_container_width=True):
-                        if st.session_state.coolers < st.session_state.locations and st.session_state.cash >= price:
-                            st.session_state.cash -= price
-                            st.session_state.coolers += 1
-                            st.toast("🧊 Cooler purchased!")
-                            st.rerun()
-                        st.error("Unavailable or insufficient funds.")
-                elif kind == "canopy":
-                    if st.button(f"Buy Canopy · {format_money(price)}", key="upgrade_canopy", use_container_width=True):
-                        if st.session_state.canopies < st.session_state.locations and st.session_state.cash >= price:
-                            st.session_state.cash -= price
-                            st.session_state.canopies += 1
-                            st.toast("⛱️ Canopy purchased!")
-                            st.rerun()
-                        st.error("Unavailable or insufficient funds.")
-                else:
-                    if st.button(f"Buy Stand · {format_money(price)}", key="upgrade_stand", use_container_width=True):
-                        if st.session_state.cash >= price:
-                            st.session_state.cash -= price
-                            st.session_state.locations += 1
-                            st.session_state.wages += 5
-                            st.toast("🏪 New stand opened!")
-                            st.rerun()
-                        st.error("Insufficient funds.")
+        render_hero("Department Store", "Build a stronger stand and choose where the empire expands.")
+
+        st.markdown("### 📍 Expansion")
+        location_choice = st.selectbox(
+            "Choose your next location",
+            [name for name in LOCATION_PROFILES if name != "Neighborhood"],
+            format_func=lambda name: (
+                f"{LOCATION_PROFILES[name]['icon']} {name} · "
+                f"{format_money(LOCATION_PROFILES[name]['rent'])}/day"
+            ),
+            key="new_location_choice",
+        )
+        profile = LOCATION_PROFILES[location_choice]
+
+        cols = st.columns(4)
+
+        with cols[0]:
+            st.markdown(
+                f"""<div class="upgrade-card">
+                <div class="upgrade-icon">{profile["icon"]}</div>
+                <div class="upgrade-name">{location_choice}</div>
+                <div class="upgrade-copy">{profile["copy"]}</div>
+                <div class="pill">Demand {profile["demand"]:.2f}×</div>
+                <div class="pill">Price tolerance {profile["price_tolerance"]:.2f}×</div>
+                </div>""",
+                unsafe_allow_html=True,
+            )
+            if st.button(
+                f"Open {location_choice} · {format_money(st.session_state.standPrice)}",
+                key="upgrade_new_location",
+                use_container_width=True,
+            ):
+                if st.session_state.cash >= st.session_state.standPrice:
+                    st.session_state.cash -= st.session_state.standPrice
+                    st.session_state.locations += 1
+                    st.session_state.location_types.append(location_choice)
+                    st.session_state.wages += 5
+                    st.toast(f"{profile['icon']} {location_choice} opened!")
+                    st.rerun()
+                st.error("Insufficient funds.")
+
+        with cols[1]:
+            price = st.session_state.coolerPrice
+            st.markdown(
+                f"""<div class="upgrade-card">
+                <div class="upgrade-icon">🧊</div>
+                <div class="upgrade-name">Lemon Cooler</div>
+                <div class="upgrade-copy">Reduces spoilage.</div>
+                <div class="pill">Owned: {st.session_state.coolers}</div>
+                </div>""",
+                unsafe_allow_html=True,
+            )
+            if st.button(
+                f"Buy Cooler · {format_money(price)}",
+                key="upgrade_cooler",
+                use_container_width=True,
+            ):
+                if st.session_state.coolers < st.session_state.locations and st.session_state.cash >= price:
+                    st.session_state.cash -= price
+                    st.session_state.coolers += 1
+                    st.toast("🧊 Cooler purchased!")
+                    st.rerun()
+                st.error("Unavailable or insufficient funds.")
+
+        with cols[2]:
+            price = st.session_state.canopyPrice
+            st.markdown(
+                f"""<div class="upgrade-card">
+                <div class="upgrade-icon">⛱️</div>
+                <div class="upgrade-name">Stand Canopy</div>
+                <div class="upgrade-copy">Reduces rain-related sugar losses.</div>
+                <div class="pill">Owned: {st.session_state.canopies}</div>
+                </div>""",
+                unsafe_allow_html=True,
+            )
+            if st.button(
+                f"Buy Canopy · {format_money(price)}",
+                key="upgrade_canopy",
+                use_container_width=True,
+            ):
+                if st.session_state.canopies < st.session_state.locations and st.session_state.cash >= price:
+                    st.session_state.cash -= price
+                    st.session_state.canopies += 1
+                    st.toast("⛱️ Canopy purchased!")
+                    st.rerun()
+                st.error("Unavailable or insufficient funds.")
+
+        with cols[3]:
+            st.markdown(
+                f"""<div class="upgrade-card">
+                <div class="upgrade-icon">🗺️</div>
+                <div class="upgrade-name">Current Footprint</div>
+                <div class="upgrade-copy">Locations now shape demand, pricing power, rent, and weather exposure.</div>
+                <div class="pill">Locations: {st.session_state.locations}</div>
+                </div>""",
+                unsafe_allow_html=True,
+            )
+
+        st.markdown("### 📍 Location Mix")
+        location_rows = []
+        for name, count in location_name_counts().items():
+            profile = LOCATION_PROFILES[name]
+            location_rows.append(
+                {
+                    "Location": f"{profile['icon']} {name}",
+                    "Count": count,
+                    "Demand": f"{profile['demand']:.2f}×",
+                    "Price tolerance": f"{profile['price_tolerance']:.2f}×",
+                    "Daily rent": format_money(profile["rent"]),
+                }
+            )
+        st.dataframe(
+            pd.DataFrame(location_rows),
+            use_container_width=True,
+            hide_index=True,
+        )
 
         st.markdown("### 🏙️ Empire Progress")
         render_stand_scene()
